@@ -8,7 +8,9 @@ export type Locale = "en" | "zh" | "ru";
 type Dict = Record<string, string>;
 
 const en: Dict = {
-  "drag.title": "Drag to move · Settings → General resets",
+  "drag.title": "Drag to move — pins the window · Reset in Settings → General",
+  "pin.on": "Pinned — stays on top, no auto-hide. Click to unpin",
+  "pin.off": "Pin — keep on top, no auto-hide",
   "settings.credSource": "Credential source",
   "settings.credAuto": "Auto-discover (read other tools' logins)",
   "settings.credExplicit": "Explicit only (keys saved in Pane)",
@@ -407,7 +409,9 @@ const en: Dict = {
 };
 
 const zh: Dict = {
-  "drag.title": "拖动移动窗口 · 设置 → 通用可重置",
+  "drag.title": "拖动移动并固定窗口 · 设置 → 通用可重置",
+  "pin.on": "已固定——置顶显示，不自动收起。点击取消固定",
+  "pin.off": "固定——置顶显示，不自动收起",
   "settings.credSource": "凭证来源",
   "settings.credAuto": "自动发现（读取其他工具的登录）",
   "settings.credExplicit": "仅显式登录（只用本应用保存的密钥）",
@@ -795,7 +799,9 @@ const zh: Dict = {
 };
 
 const ru: Dict = {
-  "drag.title": "Перетащите, чтобы переместить · Сброс: Настройки → Общие",
+  "drag.title": "Перетащите — окно закрепится · Сброс: Настройки → Общие",
+  "pin.on": "Закреплено — поверх всех, не скрывается. Нажмите, чтобы открепить",
+  "pin.off": "Закрепить — поверх всех, без автоскрытия",
   "settings.credSource": "Источник данных",
   "settings.credAuto": "Автообнаружение (логины других инструментов)",
   "settings.credExplicit": "Только явные (ключи, сохранённые в Pane)",

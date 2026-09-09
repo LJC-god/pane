@@ -57,10 +57,11 @@
     <main class="popover">
       <div class="main-col">
         <!-- Window drag handle: data-tauri-drag-region makes Tauri move the
-             frameless window; the position persists (config.windowPos) and
-             is restored on every reopen until reset in Settings. -->
-        <div id="drag-zone" data-tauri-drag-region data-i18n-title="drag.title" title="Drag to move · Settings → General resets">
+             frameless window; dragging also pins it (WeChat-style — stays
+             on top, no auto-hide). The pin button toggles that explicitly. -->
+        <div id="drag-zone" data-tauri-drag-region data-i18n-title="drag.title" title="Drag to move — pins the window">
           <span class="drag-pill" data-tauri-drag-region></span>
+          <button id="pin-btn" type="button" aria-pressed="false" data-i18n-title="pin.off" title="Pin — stay on top, no auto-hide">&#128204;</button>
         </div>
         <div class="content">
           <section id="providers">

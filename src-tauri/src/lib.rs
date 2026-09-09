@@ -134,6 +134,9 @@ fn config_with_defaults(mut cfg: Value) -> Value {
     // Window position pinned by dragging the popover (physical px). Null =
     // anchor to the tray on every open.
     obj.entry("windowPos").or_insert(Value::Null);
+    // Pinned windows float instead of behaving like a tray popover: they
+    // never auto-hide on blur. Dragging sets it; the pin button toggles it.
+    obj.entry("windowPinned").or_insert(json!(false));
     cfg
 }
 
@@ -183,6 +186,7 @@ const CONFIG_KEYS: &[&str] = &[
     "locale",
     "credentialMode",
     "windowPos",
+    "windowPinned",
 ];
 
 static CONFIG_WRITE: Mutex<()> = Mutex::new(());
@@ -251,6 +255,10 @@ fn set_config_inner(patch: Value) -> Result<Value, String> {
         .unwrap_or_default();
     httpapi::forget_disabled_snapshots(&disabled);
     HIDE_WANT.store(hide_usage_flag(&cfg), Ordering::Relaxed);
+    WINDOW_PINNED.store(
+        cfg.get("windowPinned").and_then(Value::as_bool).unwrap_or(false),
+        Ordering::Relaxed,
+    );
     Ok(cfg)
 }
 
@@ -2958,6 +2966,15 @@ fn saved_window_pos(cfg: &Value) -> Option<(f64, f64)> {
 /// actual drag.
 static SHOWN_AT_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 
+/// WeChat-style pin: a pinned popover stays on screen (it is already
+/// always-on-top) and never auto-hides on blur. Dragging the window pins
+/// it automatically — that is what makes a placed window behave like a
+/// floating panel instead of a tray popover — and the pin button in the
+/// popover header toggles it explicitly. Mirrored into config.windowPinned.
+static WINDOW_PINNED: AtomicBool = AtomicBool::new(false);
+static LAST_USER_MOVE_MS: AtomicU64 = AtomicU64::new(0);
+static POSITION_SAVER_RUNNING: AtomicBool = AtomicBool::new(false);
+
 fn record_shown_position(window: &tauri::WebviewWindow) {
     let pos = window
         .outer_position()
@@ -2988,6 +3005,30 @@ fn hide_popover_window(window: &tauri::WebviewWindow) {
     persist_dragged_position(window);
     let _ = window.hide();
     set_webview_memory_level(window, true);
+}
+
+/// Persist the dragged position once movement has been quiet for a beat.
+/// Pinned windows can stay open for a long time and are often closed by
+/// Quit (not hide), so waiting only for the at-hide write would lose the
+/// spot — this debounced save covers the dragged-while-pinned case.
+fn save_position_when_quiet(app: tauri::AppHandle) {
+    LAST_USER_MOVE_MS.store(now_ms(), Ordering::Relaxed);
+    if POSITION_SAVER_RUNNING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            if now_ms().saturating_sub(LAST_USER_MOVE_MS.load(Ordering::Relaxed)) < 600 {
+                continue;
+            }
+            break;
+        }
+        if let Some(wv) = app.get_webview_window("main") {
+            persist_dragged_position(&wv);
+        }
+        POSITION_SAVER_RUNNING.store(false, Ordering::Relaxed);
+    });
 }
 
 fn toggle_popover(app: &tauri::AppHandle, click: tauri::PhysicalPosition<f64>) {
@@ -3126,6 +3167,14 @@ pub fn run() {
 
             httpapi::start();
 
+            WINDOW_PINNED.store(
+                config_with_defaults(load_config())
+                    .get("windowPinned")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                Ordering::Relaxed,
+            );
+
             let saved_shortcut = load_config()
                 .get("shortcut")
                 .and_then(Value::as_str)
@@ -3154,17 +3203,77 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" {
-                if let WindowEvent::Focused(false) = event {
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                // A visible window whose position left the open-time spot is
+                // being dragged by the user: pin it (WeChat-style) so the
+                // blur the native move loop fires never hides it mid-drag.
+                // The 2px tolerance absorbs DPI rounding on show.
+                WindowEvent::Moved(pos) => {
                     let Some(wv) = window.app_handle().get_webview_window("main") else {
                         return;
                     };
-                    if wv.is_visible().unwrap_or(false) && wv.hide().is_ok() {
-                        persist_dragged_position(&wv);
-                        LAST_AUTO_HIDE_MS.store(now_ms(), Ordering::Relaxed);
-                        set_webview_memory_level(&wv, true);
+                    if !wv.is_visible().unwrap_or(false) {
+                        return;
                     }
+                    let dragged = {
+                        let shown = SHOWN_AT_POS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        shown.is_some_and(|(sx, sy)| {
+                            (sx - pos.x).abs() > 2 || (sy - pos.y).abs() > 2
+                        })
+                    };
+                    if !dragged {
+                        return;
+                    }
+                    if !WINDOW_PINNED.swap(true, Ordering::Relaxed) {
+                        let _ = set_config_inner(json!({ "windowPinned": true }));
+                        // Tell the webview so the pin button reflects the
+                        // automatic pin without waiting for a config reload.
+                        let _ = wv.emit("window-pinned", ());
+                    }
+                    save_position_when_quiet(wv.app_handle().clone());
                 }
+                WindowEvent::Focused(false) => {
+                    let Some(wv) = window.app_handle().get_webview_window("main") else {
+                        return;
+                    };
+                    if !wv.is_visible().unwrap_or(false) {
+                        return;
+                    }
+                    // Pinned windows stay on screen — clicking away must not
+                    // close them.
+                    if WINDOW_PINNED.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    // Starting a native drag blurs the webview BEFORE any
+                    // Moved event lands; deciding 350 ms later lets the drag
+                    // mark the window pinned first, so a dragged window never
+                    // hides mid-move. A plain click-away still closes, just
+                    // a beat later.
+                    let app = wv.app_handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(350));
+                        let Some(wv) = app.get_webview_window("main") else {
+                            return;
+                        };
+                        if WINDOW_PINNED.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if wv.is_focused().unwrap_or(false) || !wv.is_visible().unwrap_or(false) {
+                            return;
+                        }
+                        persist_dragged_position(&wv);
+                        if wv.hide().is_ok() {
+                            LAST_AUTO_HIDE_MS.store(now_ms(), Ordering::Relaxed);
+                            set_webview_memory_level(&wv, true);
+                        }
+                    });
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

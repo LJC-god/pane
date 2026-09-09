@@ -2467,3 +2467,35 @@ body.no-glass #confirm-box {
 .accounts-add button:hover {
   filter: brightness(1.15);
 }
+
+/* Pin toggle (WeChat-style): unpinned is a tilted translucent pin, pinned
+   is upright and solid. Sits at the right end of the drag strip. */
+#drag-zone {
+  position: relative;
+}
+
+#pin-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%) rotate(45deg);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--secondary-foreground);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+#pin-btn:hover {
+  opacity: 0.8;
+}
+
+#pin-btn.pinned {
+  transform: translateY(-50%) rotate(0deg);
+  opacity: 1;
+  color: var(--foreground);
+}

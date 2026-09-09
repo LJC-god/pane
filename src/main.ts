@@ -214,6 +214,7 @@ interface Config {
   locale: LocalePref;
   credentialMode: "auto" | "explicit";
   windowPos: { x: number; y: number } | null;
+  windowPinned: boolean;
 }
 
 const FRONTEND_CONFIG_KEYS = [
@@ -245,6 +246,7 @@ const FRONTEND_CONFIG_KEYS = [
   "locale",
   "credentialMode",
   "windowPos",
+  "windowPinned",
 ] as const satisfies readonly (keyof Config)[];
 type _AssertAllConfigKeys = Exclude<keyof Config, (typeof FRONTEND_CONFIG_KEYS)[number]> extends never
   ? true
@@ -431,6 +433,7 @@ let config: Config = {
   locale: "auto",
   credentialMode: "auto",
   windowPos: null,
+  windowPinned: false,
 };
 let lastFetch = 0;
 let refreshing = false;
@@ -4314,9 +4317,27 @@ async function initSettings(): Promise<void> {
     void patchConfig({ credentialMode: next }).then(() => refresh(true));
   });
 
+  const pinBtn = document.querySelector<HTMLButtonElement>("#pin-btn")!;
+  const syncPinButton = () => {
+    const pinned = config.windowPinned === true;
+    pinBtn.classList.toggle("pinned", pinned);
+    pinBtn.setAttribute("aria-pressed", String(pinned));
+    pinBtn.title = t(pinned ? "pin.on" : "pin.off");
+  };
+  syncPinButton();
+  pinBtn.addEventListener("click", () => {
+    void patchConfig({ windowPinned: !config.windowPinned }).then(syncPinButton);
+  });
+  // Rust auto-pins on drag (WindowEvent::Moved); mirror it on the button.
+  void listen("window-pinned", () => {
+    config.windowPinned = true;
+    syncPinButton();
+  });
+
   const resetWinPos = document.querySelector<HTMLButtonElement>("#reset-window-pos")!;
   resetWinPos.addEventListener("click", () => {
-    void patchConfig({ windowPos: null }).then(() => {
+    void patchConfig({ windowPos: null, windowPinned: false }).then(() => {
+      syncPinButton();
       document.querySelector("#status")!.textContent = t("footer.windowPosReset");
     });
   });
