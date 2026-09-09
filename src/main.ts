@@ -4108,12 +4108,114 @@ async function addAccount(provider: string, form: HTMLFormElement): Promise<void
     keyInput.value = "";
     accountsCache.set(provider, [...(accountsCache.get(provider) ?? []), dto]);
     renderAccounts();
+    // Surface the new card immediately: ensureLayout appends unseen ids at
+    // the BOTTOM of the order, and a sixth card below the fold reads as
+    // "nothing happened". Put it first and scroll to it after the fetch.
+    const cardId = accountSnapshotId(provider, dto.id);
+    if (config.layout) {
+      config.layout.providerOrder = [
+        cardId,
+        ...config.layout.providerOrder.filter((p) => p !== cardId),
+      ];
+      await patchConfig({ layout: config.layout }).catch(() => {});
+    }
     status.textContent = t("footer.accountSaved", { name: dto.name });
     await forceUsageRefreshAttempt();
+    scrollToCard(cardId);
     requestTraySync();
   } catch (err) {
     status.textContent = t("footer.accountSaveFailed", { err: String(err) });
   }
+}
+
+/// Bring a just-added card into view — new cards land below the fold on
+/// machines with many providers, which looks like the add did nothing.
+function scrollToCard(id: string): void {
+  requestAnimationFrame(() => {
+    document
+      .querySelector(`article[data-provider="${CSS.escape(id)}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+// --- Cursor browser login (omp-style PKCE + uuid poll) --------------------
+
+async function refreshCursorLoginState(): Promise<void> {
+  const signedIn = await invoke<boolean>("cursor_login_state").catch(() => false);
+  const stateEl = document.querySelector("#cursor-login-state");
+  const loginBtn = document.querySelector<HTMLButtonElement>("#cursor-login-btn");
+  const logoutBtn = document.querySelector<HTMLButtonElement>("#cursor-logout-btn");
+  if (!stateEl || !loginBtn || !logoutBtn) return;
+  stateEl.textContent = signedIn
+    ? t("settings.cursorSignedIn")
+    : t("settings.cursorSignedOut");
+  loginBtn.hidden = signedIn;
+  logoutBtn.hidden = !signedIn;
+}
+
+let cursorLoginTimer: number | undefined;
+let cursorLoginAttempts = 0;
+
+async function startCursorLogin(): Promise<void> {
+  const status = document.querySelector("#status")!;
+  try {
+    const start = await invoke<{ url: string; uuid: string; verifier: string }>(
+      "cursor_login_begin",
+    );
+    await invoke("open_link", { url: start.url });
+    status.textContent = t("footer.cursorLoginWaiting");
+    loginBtn.textContent = t("settings.cursorLoginWaitingBtn");
+    cursorLoginAttempts = 0;
+    window.clearInterval(cursorLoginTimer);
+    cursorLoginTimer = window.setInterval(
+      () => void pollCursorLogin(start.uuid, start.verifier),
+      1500,
+    );
+  } catch (err) {
+    status.textContent = t("footer.cursorLoginFailed", { err: String(err) });
+  }
+}
+
+const loginBtn = document.querySelector<HTMLButtonElement>("#cursor-login-btn")!;
+
+async function pollCursorLogin(uuid: string, verifier: string): Promise<void> {
+  const status = document.querySelector("#status")!;
+  cursorLoginAttempts += 1;
+  if (cursorLoginAttempts > 130) {
+    window.clearInterval(cursorLoginTimer);
+    loginBtn.textContent = t("settings.cursorLoginBtn");
+    status.textContent = t("footer.cursorLoginTimeout");
+    return;
+  }
+  try {
+    const r = await invoke<string>("cursor_login_poll", { uuid, verifier });
+    if (r !== "done") return;
+    window.clearInterval(cursorLoginTimer);
+    loginBtn.textContent = t("settings.cursorLoginBtn");
+    await refreshCursorLoginState();
+    // The card may be parked from an editor-less first run — a successful
+    // sign-in must surface it (same unpark treatment as a pasted key).
+    recentlyKeyed.set("cursor", refreshGeneration);
+    status.textContent = t("footer.cursorLoginDone");
+    await forceUsageRefreshAttempt();
+    requestTraySync();
+  } catch (err) {
+    window.clearInterval(cursorLoginTimer);
+    loginBtn.textContent = t("settings.cursorLoginBtn");
+    status.textContent = t("footer.cursorLoginFailed", { err: String(err) });
+  }
+}
+
+function initCursorLogin(): void {
+  loginBtn.addEventListener("click", () => void startCursorLogin());
+  document
+    .querySelector<HTMLButtonElement>("#cursor-logout-btn")!
+    .addEventListener("click", () => {
+      void invoke("cursor_logout")
+        .then(() => refreshCursorLoginState())
+        .then(() => forceUsageRefreshAttempt())
+        .catch(() => {});
+    });
 }
 
 async function renameAccount(provider: string, id: string): Promise<void> {
@@ -4164,6 +4266,8 @@ async function deleteAccount(provider: string, id: string): Promise<void> {
 
 function initAccountsManager(): void {
   void loadAccounts().then(renderAccounts);
+  void refreshCursorLoginState();
+  initCursorLogin();
   document.querySelectorAll<HTMLFormElement>("[data-account-add]").forEach((form) => {
     const provider = form.getAttribute("data-account-add")!;
     form.addEventListener("submit", (e) => {

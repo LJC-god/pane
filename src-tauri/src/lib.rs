@@ -1747,7 +1747,14 @@ async fn fetch_usage(
                 || disabled.iter().any(|d| d == "kimi")
                 || !kimi_card_live
         })
-        .filter(|(id, _)| !(skip_implicit_only && IMPLICIT_ONLY_PROVIDERS.contains(id)))
+        .filter(|(id, _)| {
+            !(skip_implicit_only
+                && IMPLICIT_ONLY_PROVIDERS.contains(id)
+                // Cursor with Pane's own browser login is explicit — the
+                // login flow (Settings → Accounts) stores its tokens in
+                // Pane's config dir, not the editor's database.
+                && !(*id == "cursor" && providers::cursor::has_stored_login()))
+        })
         .map(|(id, fut)| (id.to_string(), fut))
         .collect();
     // Extra Claude accounts (multi-login machines): each discovered config
@@ -2277,9 +2284,11 @@ fn cached_usage() -> Vec<providers::Snapshot> {
                 && !swapped.iter().any(|f| f == id)
                 // Explicit-only mode must not paint cached cards of the
                 // families whose files it refuses to read — not even for
-                // the seconds until the live fetch lands.
+                // the seconds until the live fetch lands. Cursor's browser
+                // login is Pane's own credential and stays eligible.
                 && !(skip_implicit_only
-                    && IMPLICIT_ONLY_PROVIDERS.contains(&family_of(id).as_str()))
+                    && IMPLICIT_ONLY_PROVIDERS.contains(&family_of(id).as_str())
+                    && !(family_of(id) == "cursor" && providers::cursor::has_stored_login()))
         })
         .map(|(_, c)| {
             let mut s = c.snap;
@@ -2396,6 +2405,36 @@ fn accounts_rename(provider: String, id: String, name: String) -> Result<(), Str
 fn accounts_delete(provider: String, id: String) -> Result<(), String> {
     providers::accounts::delete(&provider, &id)?;
     let _ = forget_provider_snapshot(&format!("{provider}@{id}"));
+    Ok(())
+}
+
+// --- Cursor browser login (omp-style PKCE + uuid poll) -------------------
+
+#[tauri::command]
+fn cursor_login_begin() -> Result<providers::cursor::LoginStart, String> {
+    providers::cursor::login_begin()
+}
+
+/// One poll attempt; returns "pending" until the browser sign-in lands,
+/// then "done". The frontend drives the cadence so the wait is cancellable.
+#[tauri::command]
+async fn cursor_login_poll(uuid: String, verifier: String) -> Result<String, String> {
+    match providers::cursor::login_poll(&uuid, &verifier).await {
+        providers::cursor::LoginPoll::Pending => Ok("pending".into()),
+        providers::cursor::LoginPoll::Done => Ok("done".into()),
+        providers::cursor::LoginPoll::Failed(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+fn cursor_login_state() -> bool {
+    providers::cursor::has_stored_login()
+}
+
+#[tauri::command]
+fn cursor_logout() -> Result<(), String> {
+    providers::cursor::logout_stored_login();
+    let _ = forget_provider_snapshot("cursor");
     Ok(())
 }
 
@@ -3095,6 +3134,10 @@ pub fn run() {
             accounts_add,
             accounts_rename,
             accounts_delete,
+            cursor_login_begin,
+            cursor_login_poll,
+            cursor_login_state,
+            cursor_logout,
             onenewapi_list_sites,
             onenewapi_probe_site,
             onenewapi_create_site,

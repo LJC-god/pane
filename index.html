@@ -319,6 +319,17 @@
             account gets its own card. Keys stay only on this PC
             (%APPDATA%\Pane\accounts).
           </p>
+          <div class="accounts-block" data-account-provider="cursor">
+            <h4 class="accounts-title">Cursor</h4>
+            <p class="settings-note" data-i18n="settings.cursorLoginNote">
+              Sign in with your browser — no Cursor install needed. Tokens stay on this PC.
+            </p>
+            <div class="account-row" id="cursor-login-row">
+              <span class="account-name" id="cursor-login-state">Not signed in</span>
+              <button id="cursor-login-btn" type="button" data-i18n="settings.cursorLoginBtn">Sign in</button>
+              <button id="cursor-logout-btn" type="button" hidden data-i18n="settings.cursorLogoutBtn">Log out</button>
+            </div>
+          </div>
           <div class="accounts-block" data-account-provider="kimi">
             <h4 class="accounts-title">Kimi</h4>
             <div class="accounts-list" data-account-list="kimi"></div>

@@ -129,6 +129,119 @@ pub async fn snapshot() -> Snapshot {
     }
 }
 
+// --- Browser login (omp-style): PKCE + uuid poll, no Cursor install -----
+//
+// Pane opens https://cursor.com/loginDeepControl with a PKCE challenge and
+// a random uuid; the user signs in in the browser, the server binds the
+// session to that uuid, and polling api2.cursor.sh/auth/poll returns the
+// token pair. No local callback server, and the Cursor editor never has
+// to be installed. Tokens live in %APPDATA%\Pane\cursor_login.json and
+// are Pane's OWN credential — they take priority over the editor's
+// database and are the only Cursor source in explicit-only mode.
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct StoredLogin {
+    pub access_token: String,
+    pub refresh_token: String,
+    #[serde(default)]
+    pub logged_in_at: i64,
+}
+
+fn login_store_path() -> PathBuf {
+    super::config_dir().join("cursor_login.json")
+}
+
+pub fn has_stored_login() -> bool {
+    load_stored_login().is_some()
+}
+
+fn load_stored_login() -> Option<StoredLogin> {
+    let raw = std::fs::read_to_string(login_store_path()).ok()?;
+    let login: StoredLogin = serde_json::from_str(&raw).ok()?;
+    (!login.access_token.is_empty() && !login.refresh_token.is_empty()).then_some(login)
+}
+
+fn save_stored_login(access: &str, refresh: &str) {
+    let doc = StoredLogin {
+        access_token: access.to_string(),
+        refresh_token: refresh.to_string(),
+        logged_in_at: chrono::Utc::now().timestamp_millis(),
+    };
+    if let Ok(raw) = serde_json::to_string(&doc) {
+        let _ = super::onenewapi::store::atomic_write(&login_store_path(), &raw);
+    }
+}
+
+pub fn logout_stored_login() {
+    let _ = std::fs::remove_file(login_store_path());
+}
+
+#[derive(serde::Serialize)]
+pub struct LoginStart {
+    pub url: String,
+    pub uuid: String,
+    pub verifier: String,
+}
+
+pub fn login_begin() -> Result<LoginStart, String> {
+    use base64::Engine;
+    use sha2::Digest;
+    let mut verifier_bytes = [0u8; 64];
+    getrandom::getrandom(&mut verifier_bytes).map_err(|e| format!("entropy: {e}"))?;
+    let verifier =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    // RFC 4122 v4 UUID — Cursor's server binds the login to this value.
+    let mut uuid = [0u8; 16];
+    getrandom::getrandom(&mut uuid).map_err(|e| format!("entropy: {e}"))?;
+    uuid[6] = (uuid[6] & 0x0f) | 0x40;
+    uuid[8] = (uuid[8] & 0x3f) | 0x80;
+    let hex: String = uuid.iter().map(|b| format!("{b:02x}")).collect();
+    let uuid = format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]);
+    let url = format!(
+        "https://cursor.com/loginDeepControl?challenge={challenge}&uuid={uuid}&mode=login&redirectTarget=cli"
+    );
+    Ok(LoginStart { url, uuid, verifier })
+}
+
+pub enum LoginPoll {
+    /// 404 — the browser sign-in hasn't landed yet; keep polling.
+    Pending,
+    Done,
+    Failed(String),
+}
+
+/// One poll attempt; the frontend drives the cadence so the wait stays
+/// cancellable and can time out with a clear message.
+pub async fn login_poll(uuid: &str, verifier: &str) -> LoginPoll {
+    let resp = match http()
+        .get(format!("https://api2.cursor.sh/auth/poll?uuid={uuid}&verifier={verifier}"))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return LoginPoll::Failed(format!("poll: {e}")),
+    };
+    match resp.status().as_u16() {
+        404 | 425 | 429 => LoginPoll::Pending,
+        s if !(200..300).contains(&(s as i32)) => LoginPoll::Failed(format!("poll: HTTP {s}")),
+        _ => {
+            let v: Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => return LoginPoll::Failed(format!("poll parse: {e}")),
+            };
+            let access = v.get("accessToken").and_then(Value::as_str).unwrap_or_default().to_string();
+            let refresh = v.get("refreshToken").and_then(Value::as_str).unwrap_or_default().to_string();
+            if access.is_empty() || refresh.is_empty() {
+                return LoginPoll::Failed("poll response missing tokens".into());
+            }
+            save_stored_login(&access, &refresh);
+            LoginPoll::Done
+        }
+    }
+}
+
 /// The dashboard's usage-events CSV export — the raw material for Cursor
 /// spend tiles. Cached briefly so live usage shows up within minutes like
 /// every other spend source (the 31-day export is only a few KB); a failed
@@ -154,12 +267,19 @@ pub async fn fetch_usage_csv() -> Option<String> {
     };
 
     // Prefer a token refreshed by fetch() this run — the stored one may
-    // have expired since Cursor last wrote it.
+    // have expired since it was last written. Pane's own browser login
+    // outranks the editor database; explicit-only mode stops there.
     let Some(token) = refreshed_token()
         .lock()
         .ok()
         .and_then(|t| t.clone())
-        .or_else(|| read_state_values().ok()?.0.map(|t| unquote(&t)))
+        .or_else(|| load_stored_login().map(|l| l.access_token))
+        .or_else(|| {
+            if !super::implicit_auth_allowed() {
+                return None;
+            }
+            read_state_values().ok()?.0.map(|t| unquote(&t))
+        })
     else {
         return stale();
     };
@@ -233,6 +353,43 @@ async fn connect_post(method: &str, token: &str) -> Result<Option<Value>, String
             .map(Some)
             .map_err(|e| format!("{method} parse: {e}")),
     }
+}
+
+/// Refresh a Cursor session. The dashboard's OAuth endpoint first; omp's
+/// exchange_user_api_key as the fallback — that is the endpoint browser-
+/// login tokens rotate through. `persist` writes the rotated pair back to
+/// Pane's own login store (browser logins only — the editor's state.vscdb
+/// is never written).
+async fn refresh_any(refresh: &str, persist: bool) -> Option<String> {
+    if let Some(token) = refresh_access_token(refresh).await {
+        return Some(token);
+    }
+    let resp = http()
+        .post("https://api2.cursor.sh/auth/exchange_user_api_key")
+        .header("Content-Type", "application/json")
+        .bearer_auth(refresh)
+        .body("{}")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[pane] cursor exchange refresh: HTTP {}", resp.status());
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    let access = v.get("accessToken")?.as_str()?.to_string();
+    let new_refresh = v
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .unwrap_or(refresh)
+        .to_string();
+    if persist {
+        save_stored_login(&access, &new_refresh);
+    }
+    if let Ok(mut t) = refreshed_token().lock() {
+        *t = Some(access.clone());
+    }
+    Some(access)
 }
 
 async fn refresh_access_token(refresh: &str) -> Option<String> {
@@ -347,31 +504,47 @@ fn title_case(s: &str) -> String {
 }
 
 async fn fetch() -> Result<Snapshot, String> {
-    let (access_raw, refresh_raw) = read_state_values()?;
-    let Some(token_raw) = access_raw else {
-        return Ok(Snapshot::no_credentials(
-            ID,
-            NAME,
-            "Cursor sign-in not found. Open Cursor and log in.",
-        ));
+    // Pane's own browser login wins over the editor's database; in
+    // explicit-only mode it is the only Cursor source at all.
+    let pane_login = load_stored_login();
+    let (mut token, refresh): (String, Option<String>) = if let Some(login) = pane_login.clone() {
+        let refresh = Some(login.refresh_token);
+        let refreshed = refreshed_token().lock().ok().and_then(|t| t.clone());
+        (refreshed.unwrap_or(login.access_token), refresh)
+    } else {
+        if !super::implicit_auth_allowed() {
+            return Ok(Snapshot::no_credentials(
+                ID,
+                NAME,
+                "Explicit-only mode: sign in with the browser button in Settings \u{2192} Accounts (gear icon).",
+            ));
+        }
+        let (access_raw, refresh_raw) = read_state_values()?;
+        let Some(token_raw) = access_raw else {
+            return Ok(Snapshot::no_credentials(
+                ID,
+                NAME,
+                "Cursor sign-in not found. Open Cursor and log in.",
+            ));
+        };
+        let stored = unquote(&token_raw);
+        if stored.is_empty() {
+            return Ok(Snapshot::no_credentials(
+                ID,
+                NAME,
+                "Cursor sign-in not found. Open Cursor and log in.",
+            ));
+        }
+        let refresh = refresh_raw.map(|r| unquote(&r)).filter(|r| !r.is_empty());
+        // Prefer a token we refreshed ourselves this run; the stored one may
+        // be stale if Cursor hasn't been opened in a while.
+        let token = refreshed_token()
+            .lock()
+            .ok()
+            .and_then(|t| t.clone())
+            .unwrap_or_else(|| stored.clone());
+        (token, refresh)
     };
-    let stored = unquote(&token_raw);
-    if stored.is_empty() {
-        return Ok(Snapshot::no_credentials(
-            ID,
-            NAME,
-            "Cursor sign-in not found. Open Cursor and log in.",
-        ));
-    }
-    let refresh = refresh_raw.map(|r| unquote(&r)).filter(|r| !r.is_empty());
-
-    // Prefer a token we refreshed ourselves this run; the stored one may
-    // be stale if Cursor hasn't been opened in a while.
-    let mut token = refreshed_token()
-        .lock()
-        .ok()
-        .and_then(|t| t.clone())
-        .unwrap_or_else(|| stored.clone());
 
     // Current-generation usage: percent of the plan's included usage,
     // via the same dashboard RPCs Cursor's web dashboard calls.
@@ -405,7 +578,7 @@ async fn fetch() -> Result<Snapshot, String> {
     };
     if usage.is_none() {
         if let Some(fresh) = match &refresh {
-            Some(r) => refresh_access_token(r).await,
+            Some(r) => refresh_any(r, pane_login.is_some()).await,
             None => None,
         } {
             token = fresh;
@@ -413,7 +586,10 @@ async fn fetch() -> Result<Snapshot, String> {
         }
     }
     let Some(usage) = usage else {
-        return Err("Cursor session expired — open Cursor once to refresh it".into());
+        return Err(
+            "Cursor session expired — open Cursor once to refresh it, or sign in again from Settings"
+                .into(),
+        );
     };
 
     let enabled = usage.get("enabled").and_then(Value::as_bool) != Some(false);
