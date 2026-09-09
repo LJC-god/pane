@@ -31,6 +31,10 @@ fn find_api_key() -> Option<String> {
     if let Some(key) = super::stored_api_key(ID, &["MINIMAX_API_KEY"]) {
         return Some(key);
     }
+    // The MiniMax Agent CLI's config — off-limits in explicit-only mode.
+    if !super::implicit_auth_allowed() {
+        return None;
+    }
     let path = dirs::home_dir()?.join(".minimax").join("config.yaml");
     let raw = std::fs::read_to_string(path).ok()?;
     cli_config_key(&raw)

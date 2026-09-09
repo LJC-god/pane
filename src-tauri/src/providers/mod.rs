@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod aihubmix;
 pub mod antigravity;
 pub mod claude;
@@ -8,6 +9,7 @@ pub mod cursor;
 pub mod deepseek;
 pub mod devin;
 pub mod elevenlabs;
+pub mod glm_cn;
 pub mod grok;
 pub mod hermes;
 pub mod kilo;
@@ -395,6 +397,24 @@ pub(crate) fn account_scan_roots() -> Vec<std::path::PathBuf> {
         }
     }
     roots
+}
+
+/// Credential source (Settings → General). "auto" (default) keeps the
+/// historical behavior: Pane silently reuses the logins other AI CLIs
+/// keep on this PC. "explicit" is the privacy stance — Pane touches ONLY
+/// credentials the user typed into Pane itself (Settings keys, named
+/// accounts), never another tool's files. Read fresh like
+/// provider_disabled so flipping the switch takes effect on the next
+/// refresh without a restart.
+pub fn implicit_auth_allowed() -> bool {
+    let Ok(raw) = std::fs::read_to_string(config_dir().join("config.json")) else {
+        return true;
+    };
+    let Ok(cfg) = serde_json::from_str::<serde_json::Value>(raw.trim_start_matches('\u{feff}'))
+    else {
+        return true;
+    };
+    cfg.get("credentialMode").and_then(serde_json::Value::as_str) != Some("explicit")
 }
 
 /// True when Customize has this provider switched off. Disabled providers

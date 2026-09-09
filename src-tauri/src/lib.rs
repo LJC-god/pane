@@ -126,6 +126,14 @@ fn config_with_defaults(mut cfg: Value) -> Value {
     obj.entry("reduceAnimations").or_insert(json!(false));
     obj.entry("hideUsageWhileSharing").or_insert(json!(false));
     obj.entry("locale").or_insert(json!("auto"));
+    // Credential source: "auto" silently reuses other AI CLIs' local logins
+    // (historical behavior); "explicit" restricts Pane to keys the user
+    // typed into Pane (Settings keys + named accounts) and never opens
+    // another tool's credential files.
+    obj.entry("credentialMode").or_insert(json!("auto"));
+    // Window position pinned by dragging the popover (physical px). Null =
+    // anchor to the tray on every open.
+    obj.entry("windowPos").or_insert(Value::Null);
     cfg
 }
 
@@ -173,6 +181,8 @@ const CONFIG_KEYS: &[&str] = &[
     "reduceAnimations",
     "hideUsageWhileSharing",
     "locale",
+    "credentialMode",
+    "windowPos",
 ];
 
 static CONFIG_WRITE: Mutex<()> = Mutex::new(());
@@ -185,6 +195,12 @@ fn apply_config_patch(cfg: &mut Value, patch: &Value) {
                 if k == "locale" {
                     let ok = matches!(v.as_str(), Some("auto" | "en" | "zh" | "ru"));
                     target.insert(k.clone(), if ok { v.clone() } else { json!("auto") });
+                } else if k == "credentialMode" {
+                    let ok = matches!(v.as_str(), Some("auto" | "explicit"));
+                    target.insert(
+                        k.clone(),
+                        if ok { v.clone() } else { json!("auto") },
+                    );
                 } else {
                     target.insert(k.clone(), v.clone());
                 }
@@ -1349,6 +1365,25 @@ fn card_is_disabled(id: &str, disabled: &[String]) -> bool {
     is_managed_key_card(id) && disabled.iter().any(|d| d == &family_of(id))
 }
 
+/// Providers whose ONLY credential sources are other tools' local logins
+/// (CLI credential files, editor databases, Credential Manager entries).
+/// In explicit-only mode (Settings → General → Credential source) these
+/// families are skipped before spawn — the same lazy-future drop the
+/// disabled list uses — so Pane never even opens those files.
+const IMPLICIT_ONLY_PROVIDERS: &[&str] = &[
+    "claude",
+    "codex",
+    "cursor",
+    "copilot",
+    "grok",
+    "devin",
+    "antigravity",
+];
+
+fn implicit_only_mode(cfg: &Value) -> bool {
+    cfg.get("credentialMode").and_then(Value::as_str) == Some("explicit")
+}
+
 // Owned id/name so dynamically discovered account cards (claude@<hash>)
 // can ride the same guard as the static providers under a 'static spawn.
 async fn guarded<F>(id: String, name: String, fut: F) -> providers::Snapshot
@@ -1695,6 +1730,7 @@ async fn fetch_usage(
     // to fall back to). The post-fetch retain still drops it whenever
     // this cycle's Kimi snapshot is ok.
     let kimi_card_live = cached_kimi_ok();
+    let skip_implicit_only = implicit_only_mode(&cfg);
     let mut futs: Vec<(String, BoxedSnap)> = base
         .into_iter()
         .filter(|(id, _)| {
@@ -1703,32 +1739,81 @@ async fn fetch_usage(
                 || disabled.iter().any(|d| d == "kimi")
                 || !kimi_card_live
         })
+        .filter(|(id, _)| !(skip_implicit_only && IMPLICIT_ONLY_PROVIDERS.contains(id)))
         .map(|(id, fut)| (id.to_string(), fut))
         .collect();
     // Extra Claude accounts (multi-login machines): each discovered config
     // dir renders its own card under a claude@<hash8> id, running the same
     // provider flow scoped to its dir. The default login keeps the bare id.
-    for acct in providers::claude::discover_extra_accounts() {
-        let (id, name, dir) = (acct.id, acct.name, acct.dir);
-        futs.push((
-            id.clone(),
-            Box::pin(guarded(
+    // The discovery scan itself is implicit — skipped in explicit-only mode.
+    if providers::implicit_auth_allowed() {
+        for acct in providers::claude::discover_extra_accounts() {
+            let (id, name, dir) = (acct.id, acct.name, acct.dir);
+            futs.push((
                 id.clone(),
-                name.clone(),
-                providers::claude::snapshot_at(dir, id, name),
-            )),
-        ));
+                Box::pin(guarded(
+                    id.clone(),
+                    name.clone(),
+                    providers::claude::snapshot_at(dir, id, name),
+                )),
+            ));
+        }
+        for acct in providers::codex::discover_extra_accounts() {
+            let (id, name, dir) = (acct.id, acct.name, acct.dir);
+            futs.push((
+                id.clone(),
+                Box::pin(guarded(
+                    id.clone(),
+                    name.clone(),
+                    providers::codex::snapshot_at(dir, id, name),
+                )),
+            ));
+        }
     }
-    for acct in providers::codex::discover_extra_accounts() {
-        let (id, name, dir) = (acct.id, acct.name, acct.dir);
-        futs.push((
-            id.clone(),
-            Box::pin(guarded(
+    // Named explicit accounts (Settings → Accounts): one card per pasted
+    // key, labeled by the user, independent of the family's auto-discovered
+    // login. glm_cn (GLM Coding Plan, China region) has ONLY these cards.
+    if let Ok(accounts) = providers::accounts::load("kimi") {
+        for acct in accounts {
+            let id = format!("kimi@{}", acct.id);
+            let name = format!("Kimi — {}", acct.name);
+            futs.push((
                 id.clone(),
-                name.clone(),
-                providers::codex::snapshot_at(dir, id, name),
-            )),
-        ));
+                Box::pin(guarded(
+                    id.clone(),
+                    name.clone(),
+                    providers::kimi::snapshot_named(acct.id, acct.name, acct.key),
+                )),
+            ));
+        }
+    }
+    if let Ok(accounts) = providers::accounts::load("opencode") {
+        for acct in accounts {
+            let id = format!("opencode@{}", acct.id);
+            let name = format!("OpenCode — {}", acct.name);
+            futs.push((
+                id.clone(),
+                Box::pin(guarded(
+                    id.clone(),
+                    name.clone(),
+                    providers::opencode::snapshot_named(acct.id, acct.name, acct.key),
+                )),
+            ));
+        }
+    }
+    if let Ok(accounts) = providers::accounts::load("glm_cn") {
+        for acct in accounts {
+            let id = format!("glm_cn@{}", acct.id);
+            let name = format!("GLM CN — {}", acct.name);
+            futs.push((
+                id.clone(),
+                Box::pin(guarded(
+                    id.clone(),
+                    name.clone(),
+                    providers::glm_cn::snapshot_named(acct.id, acct.name, acct.key),
+                )),
+            ));
+        }
     }
     let mut expected_key_card_generations = HashMap::new();
     let onenewapi_generation_before = key_card_mutation_generation();
@@ -2173,6 +2258,7 @@ fn cached_usage() -> Vec<providers::Snapshot> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
+    let skip_implicit_only = implicit_only_mode(&cfg);
     let mut out: Vec<providers::Snapshot> = map
         .into_iter()
         .filter(|(id, c)| {
@@ -2181,6 +2267,11 @@ fn cached_usage() -> Vec<providers::Snapshot> {
                 && cached_onenewapi_id_is_configured(id, &configured_onenewapi)
                 && (family_of(id) != "sub2api" || configured_sub2api.contains(id))
                 && !swapped.iter().any(|f| f == id)
+                // Explicit-only mode must not paint cached cards of the
+                // families whose files it refuses to read — not even for
+                // the seconds until the live fetch lands.
+                && !(skip_implicit_only
+                    && IMPLICIT_ONLY_PROVIDERS.contains(&family_of(id).as_str()))
         })
         .map(|(_, c)| {
             let mut s = c.snap;
@@ -2203,11 +2294,13 @@ async fn fetch_spend() -> Vec<spend::ProviderSpend> {
     // Cursor's CSV export needs the async client; fetch it here and hand it
     // to the blocking scan. Unlike every other spend source it's an
     // authenticated NETWORK call, so it honors the disabled toggle the same
-    // way fetch_usage does — a switched-off Cursor makes no requests.
+    // way fetch_usage does — a switched-off Cursor makes no requests — and
+    // explicit-only mode, which never spends Cursor's stored login.
     let cursor_disabled = config_with_defaults(load_config())
         .get("disabled")
         .and_then(Value::as_array)
-        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("cursor")));
+        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("cursor")))
+        || !providers::implicit_auth_allowed();
     let cursor_csv = if cursor_disabled {
         None
     } else {
@@ -2255,6 +2348,47 @@ fn set_api_key(provider: String, key: String) -> Result<(), String> {
     let raw = serde_json::json!({ "apiKey": key }).to_string();
     providers::onenewapi::store::atomic_write(&path, &raw)
         .map_err(|e| format!("write key file: {e}"))
+}
+
+// --- Named accounts (Settings → Accounts) --------------------------------
+// Explicit per-provider keys with a user label; each renders its own
+// `<provider>@<id>` card. See providers::accounts.
+
+#[tauri::command]
+fn accounts_list(provider: String) -> Result<Vec<providers::accounts::AccountDto>, String> {
+    providers::accounts::list(&provider)
+}
+
+#[tauri::command]
+fn accounts_add(
+    provider: String,
+    name: String,
+    key: String,
+) -> Result<providers::accounts::AccountDto, String> {
+    let dto = providers::accounts::add(&provider, &name, &key)?;
+    Ok(dto)
+}
+
+#[tauri::command]
+fn accounts_rename(provider: String, id: String, name: String) -> Result<(), String> {
+    providers::accounts::rename(&provider, &id, &name)?;
+    let snap_id = format!("{provider}@{id}");
+    match providers::accounts::display_prefix(&provider) {
+        Some(prefix) => {
+            let _ = rename_cached_snapshot(&snap_id, format!("{prefix} — {}", name.trim()));
+        }
+        None => {
+            let _ = forget_provider_snapshot(&snap_id);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn accounts_delete(provider: String, id: String) -> Result<(), String> {
+    providers::accounts::delete(&provider, &id)?;
+    let _ = forget_provider_snapshot(&format!("{provider}@{id}"));
+    Ok(())
 }
 
 #[tauri::command]
@@ -2776,9 +2910,84 @@ fn hide_popover(app: tauri::AppHandle) {
         return;
     };
     if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-        set_webview_memory_level(&window, true);
+        hide_popover_window(&window);
     }
+}
+
+/// Clamp a saved window position into a monitor's bounds so a remembered
+/// drag spot can never strand the popover off-screen (monitor unplugged,
+/// resolution change). Falls back to the primary monitor when the point
+/// lies outside every connected one.
+fn clamp_window_position(
+    app: &tauri::AppHandle,
+    x: f64,
+    y: f64,
+    size: tauri::PhysicalSize<u32>,
+) -> tauri::PhysicalPosition<f64> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let containing = monitors.iter().find(|m| {
+        let (mx, my) = (m.position().x as f64, m.position().y as f64);
+        let (mw, mh) = (m.size().width as f64, m.size().height as f64);
+        x >= mx && x < mx + mw && y >= my && y < my + mh
+    });
+    let monitor = containing.cloned().or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return tauri::PhysicalPosition::new(x, y);
+    };
+    let (mx, my) = (monitor.position().x as f64, monitor.position().y as f64);
+    let (mw, mh) = (monitor.size().width as f64, monitor.size().height as f64);
+    // Keep at least the top-left corner of the popover on the monitor; a
+    // window larger than the monitor (tiny resolutions) stays top-left.
+    let max_x = (mx + mw - f64::from(size.width)).max(mx);
+    let max_y = (my + mh - f64::from(size.height)).max(my);
+    tauri::PhysicalPosition::new(x.clamp(mx, max_x), y.clamp(my, max_y))
+}
+
+fn saved_window_pos(cfg: &Value) -> Option<(f64, f64)> {
+    let pos = cfg.get("windowPos")?;
+    Some((
+        pos.get("x").and_then(Value::as_f64)?,
+        pos.get("y").and_then(Value::as_f64)?,
+    ))
+}
+
+/// Where the popover was last placed at open time. Compared against the
+/// position at hide time: a difference means the user dragged the window,
+/// and only then does the new spot persist — programmatic tray anchoring
+/// never writes windowPos, so "Reset to tray" (null) survives until an
+/// actual drag.
+static SHOWN_AT_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+
+fn record_shown_position(window: &tauri::WebviewWindow) {
+    let pos = window
+        .outer_position()
+        .map(|p| (p.x, p.y))
+        .unwrap_or((0, 0));
+    *SHOWN_AT_POS.lock().unwrap_or_else(|e| e.into_inner()) = Some(pos);
+}
+
+fn persist_dragged_position(window: &tauri::WebviewWindow) {
+    let Ok(current) = window.outer_position() else {
+        return;
+    };
+    let moved_by_user = {
+        let shown = SHOWN_AT_POS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        shown.is_some_and(|(x, y)| x != current.x || y != current.y)
+    };
+    if !moved_by_user {
+        return;
+    }
+    let _ = set_config_inner(json!({
+        "windowPos": { "x": current.x, "y": current.y }
+    }));
+}
+
+fn hide_popover_window(window: &tauri::WebviewWindow) {
+    persist_dragged_position(window);
+    let _ = window.hide();
+    set_webview_memory_level(window, true);
 }
 
 fn toggle_popover(app: &tauri::AppHandle, click: tauri::PhysicalPosition<f64>) {
@@ -2787,8 +2996,7 @@ fn toggle_popover(app: &tauri::AppHandle, click: tauri::PhysicalPosition<f64>) {
     };
 
     if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-        set_webview_memory_level(&window, true);
+        hide_popover_window(&window);
         return;
     }
 
@@ -2798,15 +3006,21 @@ fn toggle_popover(app: &tauri::AppHandle, click: tauri::PhysicalPosition<f64>) {
 
     set_webview_memory_level(&window, false);
 
-    // Anchor the popover's bottom-right corner near the tray click,
-    // which sits next to the clock on a standard bottom taskbar.
+    // A user-dragged position wins when saved; otherwise anchor the
+    // popover's bottom-right corner near the tray click, which sits next
+    // to the clock on a standard bottom taskbar.
     let size = window
         .outer_size()
         .unwrap_or(tauri::PhysicalSize::new(380, 600));
-    let x = (click.x - f64::from(size.width)).max(0.0);
-    let y = (click.y - f64::from(size.height) - 8.0).max(0.0);
-    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    if let Some((x, y)) = saved_window_pos(&config_with_defaults(load_config())) {
+        let _ = window.set_position(clamp_window_position(app, x, y, size));
+    } else {
+        let x = (click.x - f64::from(size.width)).max(0.0);
+        let y = (click.y - f64::from(size.height) - 8.0).max(0.0);
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
     let _ = window.show();
+    record_shown_position(&window);
     let _ = window.set_focus();
     let _ = window.emit("popover-shown", ());
 }
@@ -2836,6 +3050,10 @@ pub fn run() {
             cached_usage,
             fetch_spend,
             set_api_key,
+            accounts_list,
+            accounts_add,
+            accounts_rename,
+            accounts_delete,
             onenewapi_list_sites,
             onenewapi_probe_site,
             onenewapi_create_site,
@@ -2938,11 +3156,13 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if let WindowEvent::Focused(false) = event {
-                    if window.hide().is_ok() {
+                    let Some(wv) = window.app_handle().get_webview_window("main") else {
+                        return;
+                    };
+                    if wv.is_visible().unwrap_or(false) && wv.hide().is_ok() {
+                        persist_dragged_position(&wv);
                         LAST_AUTO_HIDE_MS.store(now_ms(), Ordering::Relaxed);
-                        if let Some(wv) = window.app_handle().get_webview_window("main") {
-                            set_webview_memory_level(&wv, true);
-                        }
+                        set_webview_memory_level(&wv, true);
                     }
                 }
             }

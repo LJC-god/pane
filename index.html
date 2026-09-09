@@ -56,6 +56,12 @@
 
     <main class="popover">
       <div class="main-col">
+        <!-- Window drag handle: data-tauri-drag-region makes Tauri move the
+             frameless window; the position persists (config.windowPos) and
+             is restored on every reopen until reset in Settings. -->
+        <div id="drag-zone" data-tauri-drag-region data-i18n-title="drag.title" title="Drag to move · Settings → General resets">
+          <span class="drag-pill" data-tauri-drag-region></span>
+        </div>
         <div class="content">
           <section id="providers">
             <div class="skeleton-card">
@@ -121,6 +127,22 @@
               <option value="zh" data-i18n="settings.langZh">中文</option>
               <option value="ru" data-i18n="settings.langRu">Русский</option>
             </select>
+          </div>
+          <div class="setting-row">
+            <label for="credential-mode" data-i18n="settings.credSource">Credential source</label>
+            <select id="credential-mode">
+              <option value="auto" data-i18n="settings.credAuto">Auto-discover (read other tools&#8217; logins)</option>
+              <option value="explicit" data-i18n="settings.credExplicit">Explicit only (keys saved in Pane)</option>
+            </select>
+          </div>
+          <p class="settings-note" data-i18n="settings.credNote">
+            Auto-discover silently reuses the logins your AI CLIs keep on this PC.
+            Explicit only never opens those files — cards appear just for keys you
+            add in Pane (API keys and named accounts).
+          </p>
+          <div class="setting-row">
+            <label data-i18n="settings.windowPosLabel">Window position</label>
+            <button id="reset-window-pos" type="button" data-i18n="settings.resetPos">Reset to tray</button>
           </div>
           <div class="setting-row">
             <label for="interval" data-i18n="settings.refreshEvery">Refresh every</label>
@@ -284,6 +306,44 @@
             <label for="key-qwen">Qwen Code</label>
             <input id="key-qwen" type="password" placeholder="sk-sp-… (auto-detected from env)" data-i18n-placeholder="settings.keyPhQwen" />
             <button data-save="qwen" data-i18n="settings.save">Save</button>
+          </div>
+        </div></div>
+      </div>
+
+      <div class="acc-group">
+        <button class="acc-head"><span data-i18n="settings.accounts">Named accounts</span> <span class="chev">&#8964;</span></button>
+        <div class="acc-body"><div class="acc-inner">
+          <p class="settings-note" data-i18n="settings.accountsNote">
+            Paste several account keys per provider and name each one — every
+            account gets its own card. Keys stay only on this PC
+            (%APPDATA%\Pane\accounts).
+          </p>
+          <div class="accounts-block" data-account-provider="kimi">
+            <h4 class="accounts-title">Kimi</h4>
+            <div class="accounts-list" data-account-list="kimi"></div>
+            <form class="accounts-add" data-account-add="kimi" autocomplete="off">
+              <input type="text" spellcheck="false" data-i18n-placeholder="settings.accountsNamePh" placeholder="Name (e.g. Work)" />
+              <input type="password" spellcheck="false" data-i18n-placeholder="settings.accountsKeyPhKimi" placeholder="Kimi For Coding plan key" autocomplete="new-password" />
+              <button type="submit" data-i18n="settings.accountsAdd">Add</button>
+            </form>
+          </div>
+          <div class="accounts-block" data-account-provider="opencode">
+            <h4 class="accounts-title">OpenCode</h4>
+            <div class="accounts-list" data-account-list="opencode"></div>
+            <form class="accounts-add" data-account-add="opencode" autocomplete="off">
+              <input type="text" spellcheck="false" data-i18n-placeholder="settings.accountsNamePh" placeholder="Name (e.g. Work)" />
+              <input type="password" spellcheck="false" data-i18n-placeholder="settings.accountsKeyPhOpenCode" placeholder="OpenCode Go plan key" autocomplete="new-password" />
+              <button type="submit" data-i18n="settings.accountsAdd">Add</button>
+            </form>
+          </div>
+          <div class="accounts-block" data-account-provider="glm_cn">
+            <h4 class="accounts-title">GLM (China)</h4>
+            <div class="accounts-list" data-account-list="glm_cn"></div>
+            <form class="accounts-add" data-account-add="glm_cn" autocomplete="off">
+              <input type="text" spellcheck="false" data-i18n-placeholder="settings.accountsNamePh" placeholder="Name (e.g. Work)" />
+              <input type="password" spellcheck="false" data-i18n-placeholder="settings.accountsKeyPhGlmCn" placeholder="GLM Coding Plan key (bigmodel.cn)" autocomplete="new-password" />
+              <button type="submit" data-i18n="settings.accountsAdd">Add</button>
+            </form>
           </div>
         </div></div>
       </div>

@@ -15,6 +15,9 @@ pub async fn snapshot() -> Snapshot {
 /// `codebuff login` writes ~/.config/manicode/credentials.json (the CLI's
 /// former name): { "default": { "authToken": … } } or a top-level authToken.
 fn cli_token() -> Option<String> {
+    if !super::implicit_auth_allowed() {
+        return None;
+    }
     let path = dirs::home_dir()?.join(".config").join("manicode").join("credentials.json");
     let raw = super::read_small_text(&path, MAX_CRED_BYTES, "credentials").ok()?;
     let doc: Value = serde_json::from_str(&raw).ok()?;

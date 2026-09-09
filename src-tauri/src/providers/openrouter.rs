@@ -13,19 +13,26 @@ pub async fn snapshot() -> Snapshot {
 
 async fn fetch() -> Result<Snapshot, String> {
     // Saved key or env var first, then the key OpenCode stores if the user
-    // connected OpenRouter there.
+    // connected OpenRouter there (implicit — skipped in explicit-only mode).
     let (key, source) = match stored_api_key("openrouter", &["OPENROUTER_API_KEY"]) {
         Some(key) => (key, "your saved key"),
-        None => match super::opencode::auth_entry_key("openrouter") {
-            Some(key) => (key, "the key found in OpenCode's auth.json"),
-            None => {
-                return Ok(Snapshot::no_credentials(
-                    ID,
-                    NAME,
-                    "Paste an OpenRouter API key in Settings (gear icon).",
-                ));
+        None => {
+            let opencode_key = if super::implicit_auth_allowed() {
+                super::opencode::auth_entry_key("openrouter")
+            } else {
+                None
+            };
+            match opencode_key {
+                Some(key) => (key, "the key found in OpenCode's auth.json"),
+                None => {
+                    return Ok(Snapshot::no_credentials(
+                        ID,
+                        NAME,
+                        "Paste an OpenRouter API key in Settings (gear icon).",
+                    ));
+                }
             }
-        },
+        }
     };
 
     let credits_req = http()

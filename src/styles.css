@@ -2341,3 +2341,129 @@ body.no-glass #confirm-box {
     animation: none;
   }
 }
+
+/* Window drag handle (data-tauri-drag-region): a slim strip above the
+   cards. The whole strip drags the frameless window; cards' own HTML5
+   drag-to-reorder lives below it and never intersects. */
+#drag-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  flex: none;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+#drag-zone:active {
+  cursor: grabbing;
+}
+
+.drag-pill {
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--muted);
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+
+#drag-zone:hover .drag-pill {
+  opacity: 1;
+}
+
+/* Named accounts (Settings → Accounts) */
+.accounts-block {
+  margin: 10px 0 4px;
+}
+
+.accounts-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--secondary-foreground);
+}
+
+.accounts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+}
+
+.account-name {
+  font-size: 12px;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 110px;
+}
+
+.account-key-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--secondary-foreground);
+  font-family: var(--mono, monospace);
+}
+
+.account-row button {
+  background: var(--muted);
+  border: none;
+  border-radius: 7px;
+  color: var(--foreground);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.account-row button:hover {
+  filter: brightness(1.15);
+}
+
+.account-rename-input {
+  width: 110px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.accounts-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.accounts-add input[type="text"],
+.accounts-add input[type="password"] {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  color: var(--foreground);
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
+.accounts-add button {
+  background: var(--muted);
+  border: none;
+  border-radius: 7px;
+  color: var(--foreground);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.accounts-add button:hover {
+  filter: brightness(1.15);
+}

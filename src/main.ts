@@ -30,6 +30,7 @@ import cursorIcon from "./assets/providers/cursor.svg?raw";
 import devinIcon from "./assets/providers/devin.svg?raw";
 import grokIcon from "./assets/providers/grok.svg?raw";
 import hermesIcon from "./assets/providers/hermes.svg?raw";
+import glmCnIcon from "./assets/providers/glm-cn.svg?raw";
 import kimiIcon from "./assets/providers/kimi.svg?raw";
 import minimaxIcon from "./assets/providers/minimax.svg?raw";
 import onenewapiIcon from "./assets/providers/onenewapi.svg?raw";
@@ -54,6 +55,7 @@ const PROVIDER_ICONS: Record<string, string> = {
   copilot: copilotIcon,
   cursor: cursorIcon,
   devin: devinIcon,
+  glm_cn: glmCnIcon,
   grok: grokIcon,
   hermes: hermesIcon,
   kimi: kimiIcon,
@@ -210,6 +212,8 @@ interface Config {
   reduceAnimations: boolean;
   hideUsageWhileSharing: boolean;
   locale: LocalePref;
+  credentialMode: "auto" | "explicit";
+  windowPos: { x: number; y: number } | null;
 }
 
 const FRONTEND_CONFIG_KEYS = [
@@ -239,6 +243,8 @@ const FRONTEND_CONFIG_KEYS = [
   "reduceAnimations",
   "hideUsageWhileSharing",
   "locale",
+  "credentialMode",
+  "windowPos",
 ] as const satisfies readonly (keyof Config)[];
 type _AssertAllConfigKeys = Exclude<keyof Config, (typeof FRONTEND_CONFIG_KEYS)[number]> extends never
   ? true
@@ -294,6 +300,7 @@ const ALL_PROVIDERS: [string, string][] = [
   ["qwen", "Qwen Code"],
   ["hermes", "Hermes"],
   ["kimi", "Kimi Code"],
+  ["glm_cn", "GLM CN"],
 ];
 
 function providerDisplayName(id: string): string {
@@ -422,6 +429,8 @@ let config: Config = {
   reduceAnimations: false,
   hideUsageWhileSharing: false,
   locale: "auto",
+  credentialMode: "auto",
+  windowPos: null,
 };
 let lastFetch = 0;
 let refreshing = false;
@@ -3981,6 +3990,221 @@ async function saveApiKey(provider: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Named accounts (Settings → Accounts): per-provider keys with a label.
+// Every account renders its own card (kimi@<id>, opencode@<id>, glm_cn@<id>)
+// — the explicit counterpart to auto-discovered CLI logins.
+// ---------------------------------------------------------------------------
+
+interface AccountDto {
+  id: string;
+  name: string;
+  key_hint: string;
+  created_at: number;
+}
+
+const ACCOUNT_PROVIDERS: [string, string][] = [
+  ["kimi", "Kimi"],
+  ["opencode", "OpenCode"],
+  ["glm_cn", "GLM CN"],
+];
+
+const accountsCache = new Map<string, AccountDto[]>();
+let accountsEditing: { provider: string; id: string } | null = null;
+
+function accountSnapshotId(provider: string, id: string): string {
+  return `${provider}@${id}`;
+}
+
+async function loadAccounts(): Promise<void> {
+  for (const [provider] of ACCOUNT_PROVIDERS) {
+    try {
+      accountsCache.set(
+        provider,
+        await invoke<AccountDto[]>("accounts_list", { provider }),
+      );
+    } catch {
+      // A failed load keeps the previous list — an empty render would
+      // look like every account was deleted.
+    }
+  }
+}
+
+function accountRowHtml(provider: string, a: AccountDto): string {
+  const editing =
+    accountsEditing?.provider === provider && accountsEditing.id === a.id;
+  if (editing) {
+    return `<div class="account-row editing" data-account-id="${escapeHtml(a.id)}">
+      <input class="account-rename-input" type="text" value="${escapeHtml(a.name)}" maxlength="40" spellcheck="false" data-account-rename-input />
+      <span class="account-key-hint">${escapeHtml(a.key_hint)}</span>
+      <button data-account-rename-save="${escapeHtml(a.id)}">${escapeHtml(t("settings.accountsSave"))}</button>
+      <button data-account-rename-cancel>${escapeHtml(t("settings.accountsCancel"))}</button>
+    </div>`;
+  }
+  return `<div class="account-row" data-account-id="${escapeHtml(a.id)}">
+    <span class="account-name">${escapeHtml(a.name)}</span>
+    <span class="account-key-hint">${escapeHtml(a.key_hint)}</span>
+    <button data-account-rename="${escapeHtml(a.id)}">${escapeHtml(t("settings.accountsRename"))}</button>
+    <button data-account-delete="${escapeHtml(a.id)}">${escapeHtml(t("settings.accountsDelete"))}</button>
+  </div>`;
+}
+
+function renderAccounts(): void {
+  for (const [provider] of ACCOUNT_PROVIDERS) {
+    const list = document.querySelector(`[data-account-list="${provider}"]`);
+    if (!list) continue;
+    list.innerHTML = (accountsCache.get(provider) ?? [])
+      .map((a) => accountRowHtml(provider, a))
+      .join("");
+  }
+  const input = document.querySelector<HTMLInputElement>(
+    ".account-rename-input[data-account-rename-input]",
+  );
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+/// Drop layout/disabled/pin/cache references to a deleted account card —
+/// the snapshot id disappears with the account, and saved layouts would
+/// otherwise keep a ghost row in Customize.
+function pruneAccountReferences(provider: string, id: string): void {
+  const gone = accountSnapshotId(provider, id);
+  lastSnapshots = lastSnapshots.filter((s) => s.id !== gone);
+  if (config.layout) {
+    config.layout.providerOrder = config.layout.providerOrder.filter((p) => p !== gone);
+    delete config.layout.providers[gone];
+  }
+  if (config.disabled.includes(gone)) {
+    config.disabled = config.disabled.filter((d) => d !== gone);
+  }
+  if (config.pinned?.provider === gone) config.pinned = null;
+  void patchConfig({
+    layout: config.layout,
+    disabled: [...config.disabled],
+    pinned: config.pinned,
+  }).catch(() => {});
+}
+
+async function addAccount(provider: string, form: HTMLFormElement): Promise<void> {
+  const [nameInput, keyInput] = form.querySelectorAll<HTMLInputElement>("input");
+  const status = document.querySelector("#status")!;
+  const name = nameInput.value.trim();
+  const key = keyInput.value.trim();
+  if (!name || !key) {
+    status.textContent = t("footer.accountNeedBoth");
+    return;
+  }
+  try {
+    const dto = await invoke<AccountDto>("accounts_add", { provider, name, key });
+    // Same protection as saveApiKey: a concurrently running first-run pass
+    // must not park the brand-new card.
+    recentlyKeyed.set(accountSnapshotId(provider, dto.id), refreshGeneration);
+    nameInput.value = "";
+    keyInput.value = "";
+    accountsCache.set(provider, [...(accountsCache.get(provider) ?? []), dto]);
+    renderAccounts();
+    status.textContent = t("footer.accountSaved", { name: dto.name });
+    await forceUsageRefreshAttempt();
+    requestTraySync();
+  } catch (err) {
+    status.textContent = t("footer.accountSaveFailed", { err: String(err) });
+  }
+}
+
+async function renameAccount(provider: string, id: string): Promise<void> {
+  const input = document.querySelector<HTMLInputElement>(
+    `[data-account-list="${provider}"] .account-rename-input`,
+  );
+  const name = (input?.value ?? "").trim();
+  const status = document.querySelector("#status")!;
+  if (!name) {
+    status.textContent = t("footer.accountNeedBoth");
+    return;
+  }
+  try {
+    await invoke("accounts_rename", { provider, id, name });
+    const list = accountsCache.get(provider) ?? [];
+    for (const a of list) if (a.id === id) a.name = name;
+    accountsEditing = null;
+    const prefix = ACCOUNT_PROVIDERS.find(([p]) => p === provider)?.[1] ?? provider;
+    for (const s of lastSnapshots) {
+      if (s.id === accountSnapshotId(provider, id)) s.name = `${prefix} — ${name}`;
+    }
+    renderAccounts();
+    status.textContent = t("footer.accountRenamed", { name });
+    requestTraySync();
+  } catch (err) {
+    status.textContent = t("footer.accountSaveFailed", { err: String(err) });
+  }
+}
+
+async function deleteAccount(provider: string, id: string): Promise<void> {
+  const status = document.querySelector("#status")!;
+  try {
+    await invoke("accounts_delete", { provider, id });
+    accountsCache.set(
+      provider,
+      (accountsCache.get(provider) ?? []).filter((a) => a.id !== id),
+    );
+    if (accountsEditing?.id === id) accountsEditing = null;
+    pruneAccountReferences(provider, id);
+    renderAccounts();
+    status.textContent = t("footer.accountDeleted");
+    await forceUsageRefreshAttempt();
+    requestTraySync();
+  } catch (err) {
+    status.textContent = t("footer.accountSaveFailed", { err: String(err) });
+  }
+}
+
+function initAccountsManager(): void {
+  void loadAccounts().then(renderAccounts);
+  document.querySelectorAll<HTMLFormElement>("[data-account-add]").forEach((form) => {
+    const provider = form.getAttribute("data-account-add")!;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      void addAccount(provider, form);
+    });
+  });
+  document.querySelector("#settings")!.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const renameBtn = target.closest<HTMLElement>("[data-account-rename]");
+    if (renameBtn) {
+      const block = renameBtn.closest<HTMLElement>("[data-account-provider]")!;
+      accountsEditing = {
+        provider: block.getAttribute("data-account-provider")!,
+        id: renameBtn.getAttribute("data-account-rename")!,
+      };
+      renderAccounts();
+      return;
+    }
+    const saveBtn = target.closest<HTMLElement>("[data-account-rename-save]");
+    if (saveBtn) {
+      const block = saveBtn.closest<HTMLElement>("[data-account-provider]")!;
+      void renameAccount(
+        block.getAttribute("data-account-provider")!,
+        saveBtn.getAttribute("data-account-rename-save")!,
+      );
+      return;
+    }
+    if (target.closest("[data-account-rename-cancel]")) {
+      accountsEditing = null;
+      renderAccounts();
+      return;
+    }
+    const deleteBtn = target.closest<HTMLElement>("[data-account-delete]");
+    if (deleteBtn) {
+      const block = deleteBtn.closest<HTMLElement>("[data-account-provider]")!;
+      void deleteAccount(
+        block.getAttribute("data-account-provider")!,
+        deleteBtn.getAttribute("data-account-delete")!,
+      );
+    }
+  });
+}
+
 function populatePinnedOptions(): void {
   const select = document.querySelector<HTMLSelectElement>("#pinned")!;
   const current = config.pinned ? `${config.pinned.provider}::${config.pinned.label}` : "";
@@ -4012,6 +4236,7 @@ function applyLocale(): void {
   setActiveLocale(resolveLocale(config.locale));
   applyStaticI18n();
   for (const manager of siteKeyManagers) manager.render();
+  renderAccounts();
   applyAppearance();
   const status = document.querySelector("#status");
   if (status) {
@@ -4081,6 +4306,22 @@ async function initSettings(): Promise<void> {
     applyLocale();
     requestTraySync();
   });
+
+  const credMode = document.querySelector<HTMLSelectElement>("#credential-mode")!;
+  credMode.value = config.credentialMode === "explicit" ? "explicit" : "auto";
+  credMode.addEventListener("change", () => {
+    const next: Config["credentialMode"] = credMode.value === "explicit" ? "explicit" : "auto";
+    void patchConfig({ credentialMode: next }).then(() => refresh(true));
+  });
+
+  const resetWinPos = document.querySelector<HTMLButtonElement>("#reset-window-pos")!;
+  resetWinPos.addEventListener("click", () => {
+    void patchConfig({ windowPos: null }).then(() => {
+      document.querySelector("#status")!.textContent = t("footer.windowPosReset");
+    });
+  });
+
+  initAccountsManager();
 
   const notifyToggles: [string, keyof Config][] = [
     ["#notify-almost", "notifyAlmostOut"],

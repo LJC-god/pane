@@ -38,6 +38,28 @@ pub async fn snapshot() -> Snapshot {
     }
 }
 
+/// One named Kimi For Coding key (Settings → Accounts) → one card
+/// (`kimi@<id>`, labeled by the user), independent of the CLI login card.
+pub async fn snapshot_named(id: String, name: String, key: String) -> Snapshot {
+    let snap_id = format!("kimi@{id}");
+    let card_name = format!("Kimi — {name}");
+    let doc = match fetch_usages(&key).await {
+        Ok(doc) => doc,
+        Err(UsagesError::Unauthorized) => {
+            return Snapshot::error(
+                &snap_id,
+                &card_name,
+                "Kimi For Coding key was rejected — check it in Settings → Accounts".into(),
+            );
+        }
+        Err(UsagesError::Other(e)) => return Snapshot::error(&snap_id, &card_name, e),
+    };
+    match snapshot_from_doc(&snap_id, &card_name, &doc) {
+        Ok(s) => s,
+        Err(e) => Snapshot::error(&snap_id, &card_name, e),
+    }
+}
+
 pub fn has_login() -> bool {
     cred_path().is_some()
 }
@@ -112,7 +134,14 @@ fn cred_path() -> Option<PathBuf> {
 }
 
 async fn fetch() -> Result<Snapshot, String> {
-    let path = cred_path();
+    // Explicit-only mode never touches the CLI's login file — the pasted
+    // plan key (and named accounts, which render their own cards) carry
+    // the plan card instead.
+    let path = if super::implicit_auth_allowed() {
+        cred_path()
+    } else {
+        None
+    };
     let key = plan_key();
     if path.is_none() && key.is_none() {
         return Ok(Snapshot::no_credentials(
@@ -384,6 +413,12 @@ async fn bounded_text(resp: reqwest::Response, max_bytes: usize) -> String {
 }
 
 fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
+    snapshot_from_doc(ID, NAME, doc)
+}
+
+/// parse_snapshot for a caller-chosen card id/name (named accounts render
+/// `kimi@<id>` cards labeled by the user).
+fn snapshot_from_doc(id: &str, name: &str, doc: &Value) -> Result<Snapshot, String> {
     const SESSION_MS: i64 = 5 * HOUR_MS;
     const WEEK_MS: i64 = 7 * DAY_MS;
     let mut metrics = Vec::new();
@@ -411,7 +446,7 @@ fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
     if metrics.is_empty() {
         return Err("usage response had no recognizable limit windows".into());
     }
-    Ok(Snapshot::ok(ID, NAME, plan_from_doc(doc, weekly_limit), metrics))
+    Ok(Snapshot::ok(id, name, plan_from_doc(doc, weekly_limit), metrics))
 }
 
 fn progress_from(label: &str, node: &Value, period_ms: i64) -> Option<Metric> {

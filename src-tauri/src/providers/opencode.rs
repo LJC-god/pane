@@ -59,20 +59,41 @@ pub async fn snapshot() -> Snapshot {
     }
 }
 
-async fn fetch() -> Result<Snapshot, String> {
-    let auth_path = data_dir().join("auth.json");
-    if !auth_path.exists() {
-        return Ok(Snapshot::no_credentials(
-            ID,
-            NAME,
-            "OpenCode sign-in not found. Run `opencode` and log in.",
-        ));
+/// One named OpenCode Go key (Settings → Accounts) → one card
+/// (`opencode@<id>`, labeled by the user). Official usage API only — the
+/// local-db fallback belongs to this machine's CLI login, not to a pasted
+/// account key.
+pub async fn snapshot_named(id: String, name: String, key: String) -> Snapshot {
+    let snap_id = format!("opencode@{id}");
+    let card_name = format!("OpenCode — {name}");
+    match fetch_official(&key).await {
+        Ok(metrics) => Snapshot::ok(&snap_id, &card_name, Some("Go".into()), metrics),
+        Err(e) => Snapshot::error(&snap_id, &card_name, e),
     }
-    let Some(key) = auth_entry_key("opencode-go") else {
+}
+
+async fn fetch() -> Result<Snapshot, String> {
+    // Explicit-only mode never reads OpenCode's own auth.json — the bare
+    // card waits for the API in explicit space; named accounts (Settings →
+    // Accounts) render their own `opencode@<id>` cards.
+    let key = if super::implicit_auth_allowed() {
+        let auth_path = data_dir().join("auth.json");
+        if !auth_path.exists() {
+            return Ok(Snapshot::no_credentials(
+                ID,
+                NAME,
+                "OpenCode sign-in not found. Run `opencode` and log in.",
+            ));
+        }
+        auth_entry_key("opencode-go")
+    } else {
+        None
+    };
+    let Some(key) = key else {
         return Ok(Snapshot::no_credentials(
             ID,
             NAME,
-            "No OpenCode Go subscription found in auth.json.",
+            "Explicit-only mode: add an OpenCode Go key under Settings → Accounts (gear icon).",
         ));
     };
 

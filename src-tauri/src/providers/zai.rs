@@ -8,7 +8,10 @@ fn find_key() -> Option<String> {
     if let Some(key) = stored_api_key("zai", &["ZAI_API_KEY", "GLM_API_KEY"]) {
         return Some(key);
     }
-    // The Z.ai CLI's own key file.
+    // The Z.ai CLI's own key file — off-limits in explicit-only mode.
+    if !super::implicit_auth_allowed() {
+        return None;
+    }
     let path = dirs::home_dir()?.join(".config").join("zai").join("key.json");
     let raw = std::fs::read_to_string(path).ok()?;
     let doc: Value = serde_json::from_str(&raw).ok()?;

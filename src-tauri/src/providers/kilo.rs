@@ -14,6 +14,9 @@ pub async fn snapshot() -> Snapshot {
 
 /// The Kilo CLI keeps its session at ~/.local/share/kilo/auth.json → kilo.access
 fn cli_token() -> Option<String> {
+    if !super::implicit_auth_allowed() {
+        return None;
+    }
     let path = dirs::home_dir()?.join(".local").join("share").join("kilo").join("auth.json");
     let raw = super::read_small_text(&path, MAX_CRED_BYTES, "credentials").ok()?;
     let doc: Value = serde_json::from_str(&raw).ok()?;
