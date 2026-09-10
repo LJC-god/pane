@@ -41,6 +41,12 @@ pub fn auth_entry_key(entry: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Whether the CLI's auth.json carries an OpenCode Go key — the bare
+/// family card's only credential source besides named accounts.
+pub fn has_go_login() -> bool {
+    auth_entry_key("opencode-go").is_some()
+}
+
 /// Query the live OpenCode ledger read-only. Copying db+WAL into
 /// `%APPDATA%\Pane\tmp` used the same pattern that grew Devin's temp
 /// journal to tens of GB — never clone a vendor database onto C:.

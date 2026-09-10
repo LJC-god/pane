@@ -1392,6 +1392,33 @@ fn implicit_only_mode(cfg: &Value) -> bool {
     cfg.get("credentialMode").and_then(Value::as_str) == Some("explicit")
 }
 
+/// The bare family card (Kimi Code / OpenCode / GLM CN) exists to host the
+/// auto-discovered login or the legacy single pasted key — plus the
+/// add-account call-to-action when nothing is configured. Once named
+/// accounts exist AND the bare card has no source of its own, it would
+/// render as an empty duplicate beside the live named cards; skip it
+/// (Settings → Accounts stays the add-another entry point).
+fn bare_card_superseded(family: &str) -> bool {
+    let named = providers::accounts::load(family)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if !named {
+        return false;
+    }
+    match family {
+        // glm_cn's bare card is pure call-to-action; named cards replace it.
+        "glm_cn" => true,
+        "kimi" => {
+            !providers::kimi::has_plan_key()
+                && !(providers::implicit_auth_allowed() && providers::kimi::has_login())
+        }
+        "opencode" => {
+            !(providers::implicit_auth_allowed() && providers::opencode::has_go_login())
+        }
+        _ => false,
+    }
+}
+
 // Owned id/name so dynamically discovered account cards (claude@<hash>)
 // can ride the same guard as the static providers under a 'static spawn.
 async fn guarded<F>(id: String, name: String, fut: F) -> providers::Snapshot
@@ -1763,6 +1790,7 @@ async fn fetch_usage(
                 // Pane's config dir, not the editor's database.
                 && !(*id == "cursor" && providers::cursor::has_stored_login()))
         })
+        .filter(|(id, _)| !bare_card_superseded(id))
         .map(|(id, fut)| (id.to_string(), fut))
         .collect();
     // Extra Claude accounts (multi-login machines): each discovered config
@@ -2297,6 +2325,8 @@ fn cached_usage() -> Vec<providers::Snapshot> {
                 && !(skip_implicit_only
                     && IMPLICIT_ONLY_PROVIDERS.contains(&family_of(id).as_str())
                     && !(family_of(id) == "cursor" && providers::cursor::has_stored_login()))
+                // A superseded bare card must not flicker back from cache.
+                && !(*id == family_of(id) && bare_card_superseded(&family_of(id)))
         })
         .map(|(_, c)| {
             let mut s = c.snap;
