@@ -215,6 +215,7 @@ interface Config {
   credentialMode: "auto" | "explicit";
   windowPos: { x: number; y: number } | null;
   windowPinned: boolean;
+  displayMode: "standard" | "minimal";
 }
 
 const FRONTEND_CONFIG_KEYS = [
@@ -247,6 +248,7 @@ const FRONTEND_CONFIG_KEYS = [
   "credentialMode",
   "windowPos",
   "windowPinned",
+  "displayMode",
 ] as const satisfies readonly (keyof Config)[];
 type _AssertAllConfigKeys = Exclude<keyof Config, (typeof FRONTEND_CONFIG_KEYS)[number]> extends never
   ? true
@@ -314,6 +316,36 @@ const LOGIN_CTA_FAMILIES: Record<string, "login" | "add"> = {
   kimi: "add",
   opencode: "add",
   glm_cn: "add",
+};
+
+/// Minimal mode's per-provider accent (pi-quotas style: each provider owns
+/// one bright color across its name, bars, and values). Fallback: the
+/// theme foreground.
+const PROVIDER_COLORS: Record<string, string> = {
+  claude: "#d97757",
+  codex: "#74aa9c",
+  cursor: "#e6e6e6",
+  copilot: "#8957e5",
+  grok: "#e8e8e8",
+  devin: "#7aa2f7",
+  minimax: "#f5a623",
+  openrouter: "#6467f2",
+  zai: "#4aa8ff",
+  glm_cn: "#3fb1e8",
+  antigravity: "#8ab4f8",
+  deepseek: "#4d6bfe",
+  moonshot: "#10a37f",
+  kimi: "#10a37f",
+  elevenlabs: "#e5e5e5",
+  ollama: "#a3a3a3",
+  codebuff: "#ffb454",
+  kilo: "#c678dd",
+  aihubmix: "#61dafb",
+  onenewapi: "#f59e0b",
+  sub2api: "#38bdf8",
+  qwen: "#615ced",
+  hermes: "#e2b714",
+  opencode: "#c9f7cf",
 };
 
 function providerDisplayName(id: string): string {
@@ -445,6 +477,7 @@ let config: Config = {
   credentialMode: "auto",
   windowPos: null,
   windowPinned: false,
+  displayMode: "standard",
 };
 let lastFetch = 0;
 let refreshing = false;
@@ -2446,10 +2479,80 @@ function renderWelcome(): string {
 
 function renderAll(): void {
   const el = document.querySelector("#providers")!;
-  el.innerHTML =
-    renderWelcome() + renderTotalSpend() + orderedSnapshots().map(renderCard).join("");
+  document.body.classList.toggle("minimal-mode", config.displayMode === "minimal");
+  if (config.displayMode === "minimal") {
+    el.innerHTML = renderWelcome() + renderMinimalList(orderedSnapshots());
+  } else {
+    el.innerHTML =
+      renderWelcome() + renderTotalSpend() + orderedSnapshots().map(renderCard).join("");
+  }
   if (customizeOpen) renderDrawerBody();
   rebuildTrail();
+}
+
+// ---------------------------------------------------------------------------
+// Minimal mode — the pi-quotas look: no card chrome, one dense block per
+// provider (name in the provider's color), one line per quota window
+// (short label, thin bar, "N% left", dim reset countdown). Providers with
+// nothing to report stay hidden.
+// ---------------------------------------------------------------------------
+
+/// Window labels compressed to the pi-quotas idiom (5h / 7d / 30d);
+/// anything exotic keeps a trimmed lowercase form.
+function minimalWindowLabel(label: string): string {
+  switch (label.toLowerCase()) {
+    case "session":
+      return "5h";
+    case "weekly":
+      return "7d";
+    case "monthly":
+      return "30d";
+    default:
+      return label.length > 6 ? label.slice(0, 6) : label;
+  }
+}
+
+function renderMinimalEntry(s: Snapshot): string {
+  const family = providerFamily(s.id);
+  const color = PROVIDER_COLORS[family] ?? "var(--foreground)";
+  const icon = PROVIDER_ICONS[family] ?? "";
+  const rows = s.metrics
+    .filter((m) => m.kind === "progress")
+    .map((m) => {
+      const used = clampPercent(m.used_percent ?? 0);
+      const pace = computePace(m);
+      const danger = pace.cls === "low" ? " danger" : pace.cls === "warn" ? " warn" : "";
+      const reset =
+        m.resets_at && m.resets_at > Date.now()
+          ? `<span class="mn-reset">· ${escapeHtml(fmtDuration(m.resets_at - Date.now()))}</span>`
+          : "";
+      return `<div class="mn-row">
+        <span class="mn-label">${escapeHtml(minimalWindowLabel(m.label))}</span>
+        <span class="mn-track"><span class="mn-fill${danger}" style="width:${used.toFixed(1)}%; background:${danger ? "" : color}"></span></span>
+        <span class="mn-value${danger}">${Math.round(100 - used)}%</span>
+        ${reset}
+      </div>`;
+    })
+    .join("");
+  if (!rows) return "";
+  const stale = s.stale ? `<span class="mn-stale" title="${escapeHtml(staleHelp(s))}">⚠</span>` : "";
+  return `<section class="mn-provider" data-provider="${escapeHtml(s.id)}">
+    <header class="mn-head" style="color:${color}">
+      <span class="mn-icon">${icon}</span>
+      <span class="mn-name">${escapeHtml(s.name)}</span>
+      ${s.plan ? `<span class="mn-plan">${escapeHtml(s.plan)}</span>` : ""}
+      ${stale}
+    </header>
+    ${rows}
+  </section>`;
+}
+
+function renderMinimalList(snapshots: Snapshot[]): string {
+  const rows = snapshots
+    .filter((s) => s.status !== "no_credentials")
+    .map(renderMinimalEntry)
+    .join("");
+  return rows || `<p class="placeholder">${escapeHtml(t("card.notConnected"))}</p>`;
 }
 
 function renderDrawerBody(): void {
@@ -4509,6 +4612,13 @@ async function initSettings(): Promise<void> {
   density.checked = config.density === "compact";
   density.addEventListener("change", () => {
     void patchConfig({ density: density.checked ? "compact" : "regular" }).then(applyAppearance);
+  });
+
+  const displayMode = document.querySelector<HTMLSelectElement>("#display-mode")!;
+  displayMode.value = config.displayMode === "minimal" ? "minimal" : "standard";
+  displayMode.addEventListener("change", () => {
+    const next: Config["displayMode"] = displayMode.value === "minimal" ? "minimal" : "standard";
+    void patchConfig({ displayMode: next }).then(renderAll);
   });
 
   const glass = document.querySelector<HTMLInputElement>("#glass")!;

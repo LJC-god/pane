@@ -137,6 +137,9 @@ fn config_with_defaults(mut cfg: Value) -> Value {
     // Pinned windows float instead of behaving like a tray popover: they
     // never auto-hide on blur. Dragging sets it; the pin button toggles it.
     obj.entry("windowPinned").or_insert(json!(false));
+    // Popover look: "standard" glass cards, or "minimal" — pi-quotas-style
+    // one-line-per-window dense rows with provider colors.
+    obj.entry("displayMode").or_insert(json!("standard"));
     cfg
 }
 
@@ -187,6 +190,7 @@ const CONFIG_KEYS: &[&str] = &[
     "credentialMode",
     "windowPos",
     "windowPinned",
+    "displayMode",
 ];
 
 static CONFIG_WRITE: Mutex<()> = Mutex::new(());
@@ -204,6 +208,12 @@ fn apply_config_patch(cfg: &mut Value, patch: &Value) {
                     target.insert(
                         k.clone(),
                         if ok { v.clone() } else { json!("auto") },
+                    );
+                } else if k == "displayMode" {
+                    let ok = matches!(v.as_str(), Some("standard" | "minimal"));
+                    target.insert(
+                        k.clone(),
+                        if ok { v.clone() } else { json!("standard") },
                     );
                 } else {
                     target.insert(k.clone(), v.clone());

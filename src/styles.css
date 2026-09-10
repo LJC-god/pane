@@ -2526,3 +2526,118 @@ body.no-glass #confirm-box {
   opacity: 1;
   background: var(--foreground);
 }
+
+/* Minimal mode — pi-quotas look: dense provider blocks, one line per
+   quota window, provider-colored accents, no card chrome. */
+body.minimal-mode #providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.mn-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mn-icon {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+}
+
+.mn-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.mn-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-plan {
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.65;
+}
+
+.mn-stale {
+  font-size: 11px;
+  opacity: 0.7;
+  cursor: help;
+}
+
+.mn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  padding-left: 19px;
+}
+
+.mn-label {
+  width: 26px;
+  flex: none;
+  color: var(--secondary-foreground);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.mn-track {
+  flex: 1;
+  height: 4px;
+  min-width: 60px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--secondary-foreground) 18%, transparent);
+  overflow: hidden;
+}
+
+.mn-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.mn-fill.danger {
+  background: #e5484d;
+}
+
+.mn-fill.warn {
+  background: #f5a623;
+}
+
+.mn-value {
+  flex: none;
+  min-width: 38px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.mn-value.danger {
+  color: #e5484d;
+}
+
+.mn-value.warn {
+  color: #f5a623;
+}
+
+.mn-reset {
+  flex: none;
+  font-size: 10px;
+  color: var(--secondary-foreground);
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
