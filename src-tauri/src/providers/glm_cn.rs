@@ -16,11 +16,23 @@ use super::{http, Metric, Snapshot};
 use serde_json::Value;
 use std::time::Duration;
 
+const ID: &str = "glm_cn";
 const NAME_PREFIX: &str = "GLM CN";
 const QUOTA_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
 const HOUR_MS: i64 = 3_600_000;
 const DAY_MS: i64 = 86_400_000;
 const MAX_QUOTA_BYTES: usize = 256 * 1024;
+
+/// Bare family card. GLM CN has no implicit source, so this exists purely
+/// to carry the "add account" call-to-action on the popover; every real
+/// card comes from a named account (`glm_cn@<id>`).
+pub async fn snapshot() -> Snapshot {
+    Snapshot::no_credentials(
+        ID,
+        NAME_PREFIX,
+        "No GLM (China) account yet — add your Coding Plan key with the button on this card, or in Settings \u{2192} Accounts.",
+    )
+}
 
 /// One named account → one card. `id` is the account id; the snapshot id
 /// is `glm_cn@<id>`, the card name is the user's label.

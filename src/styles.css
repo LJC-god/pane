@@ -2499,3 +2499,30 @@ body.no-glass #confirm-box {
   opacity: 1;
   color: var(--foreground);
 }
+
+/* Card-level sign-in / add-account call-to-action on no-credentials
+   cards — one click, no detour through Settings. */
+.card-login-cta {
+  margin-top: 8px;
+  align-self: flex-start;
+  background: var(--muted);
+  border: 1px solid var(--input, transparent);
+  border-radius: 8px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.card-login-cta:hover {
+  filter: brightness(1.18);
+}
+
+/* Pin state at a glance: the drag pill brightens while the window is
+   pinned, matching the upright pin. */
+#drag-zone:has(#pin-btn.pinned) .drag-pill {
+  opacity: 1;
+  background: var(--foreground);
+}

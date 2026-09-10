@@ -1724,6 +1724,14 @@ async fn fetch_usage(
             )),
         ),
         (
+            "glm_cn",
+            Box::pin(guarded(
+                "glm_cn".into(),
+                "GLM CN".into(),
+                providers::glm_cn::snapshot(),
+            )),
+        ),
+        (
             "kimi",
             Box::pin(guarded(
                 "kimi".into(),
@@ -3022,9 +3030,12 @@ fn record_shown_position(window: &tauri::WebviewWindow) {
     *SHOWN_AT_POS.lock().unwrap_or_else(|e| e.into_inner()) = Some(pos);
 }
 
-fn persist_dragged_position(window: &tauri::WebviewWindow) {
+/// True when the window sits somewhere other than where it was opened —
+/// i.e. the user dragged it. As a side effect persists the spot (and the
+/// pin, on first drag) to config.
+fn persist_dragged_position(window: &tauri::WebviewWindow) -> bool {
     let Ok(current) = window.outer_position() else {
-        return;
+        return false;
     };
     let moved_by_user = {
         let shown = SHOWN_AT_POS
@@ -3033,11 +3044,22 @@ fn persist_dragged_position(window: &tauri::WebviewWindow) {
         shown.is_some_and(|(x, y)| x != current.x || y != current.y)
     };
     if !moved_by_user {
-        return;
+        return false;
     }
-    let _ = set_config_inner(json!({
-        "windowPos": { "x": current.x, "y": current.y }
-    }));
+    let mut patch = json!({ "windowPos": { "x": current.x, "y": current.y } });
+    // Placing a window pins it (WeChat-style float). Normally the Moved
+    // handler pins during the drag; this is the belt-and-braces path for
+    // when those events were eaten — without it, the blur that follows a
+    // drag would hide the window the user just placed.
+    let first_pin = !WINDOW_PINNED.swap(true, Ordering::Relaxed);
+    if first_pin {
+        patch["windowPinned"] = json!(true);
+    }
+    let _ = set_config_inner(patch);
+    if first_pin {
+        let _ = window.emit("window-pinned", ());
+    }
+    true
 }
 
 fn hide_popover_window(window: &tauri::WebviewWindow) {
@@ -3309,7 +3331,12 @@ pub fn run() {
                         if wv.is_focused().unwrap_or(false) || !wv.is_visible().unwrap_or(false) {
                             return;
                         }
-                        persist_dragged_position(&wv);
+                        // A window the user just placed must never be hidden
+                        // out from under them — persist_dragged_position
+                        // pins it (and returns true) when the spot moved.
+                        if persist_dragged_position(&wv) {
+                            return;
+                        }
                         if wv.hide().is_ok() {
                             LAST_AUTO_HIDE_MS.store(now_ms(), Ordering::Relaxed);
                             set_webview_memory_level(&wv, true);

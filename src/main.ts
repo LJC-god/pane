@@ -305,6 +305,17 @@ const ALL_PROVIDERS: [string, string][] = [
   ["glm_cn", "GLM CN"],
 ];
 
+/// Families whose sign-in lives inside Pane itself (browser login or named
+/// accounts) get a direct call-to-action on their no-credentials card —
+/// adding a key shouldn't require a detour through Settings. These cards
+/// are also never auto-parked by the first-run scan.
+const LOGIN_CTA_FAMILIES: Record<string, "login" | "add"> = {
+  cursor: "login",
+  kimi: "add",
+  opencode: "add",
+  glm_cn: "add",
+};
+
 function providerDisplayName(id: string): string {
   return ALL_PROVIDERS.find(([pid]) => pid === id)?.[1] ?? id;
 }
@@ -1227,7 +1238,15 @@ function renderCard(s: Snapshot): string {
         ${L.expanded ? `<div class="on-demand${anim}">${onDemandHtml}</div>` : ""}`;
     }
   } else {
-    body = `<p class="placeholder">${escapeHtml(s.error ?? t("card.notConnected"))}</p>`;
+    const ctaKind = LOGIN_CTA_FAMILIES[providerFamily(s.id)];
+    const cta = ctaKind
+      ? `<button class="card-login-cta" data-card-${
+          ctaKind === "login" ? "login" : "add-account"
+        }="${escapeHtml(providerFamily(s.id))}">${escapeHtml(
+          ctaKind === "login" ? t("card.loginCta") : t("card.addAccountCta"),
+        )}</button>`
+      : "";
+    body = `<p class="placeholder">${escapeHtml(s.error ?? t("card.notConnected"))}</p>${cta}`;
   }
 
   const stale = s.stale
@@ -2711,14 +2730,16 @@ async function refresh(force = false, usageOnly = false): Promise<void> {
     // detection. The rest stay available in Customize.
     if (config.layout === null && snapshots.length > 0) {
       // Claude and Codex always start enabled — their "connect me" cards are
-      // the new-user onboarding. Everything else without credentials waits
-      // in Customize (a fresh PC with zero AI tools sees just those two).
+      // the new-user onboarding. Families Pane can sign in on its own
+      // (browser login / named accounts) keep their call-to-action card
+      // visible too. Everything else without credentials waits in Customize.
       const starters = new Set(["claude", "codex"]);
       const noCreds = snapshots
         .filter(
           (s) =>
             s.status === "no_credentials" &&
             !starters.has(s.id) &&
+            !LOGIN_CTA_FAMILIES[providerFamily(s.id)] &&
             !recentlyKeyed.has(s.id)
         )
         .map((s) => s.id);
@@ -2738,6 +2759,7 @@ async function refresh(force = false, usageOnly = false): Promise<void> {
             s.status === "no_credentials" &&
             !(s.id in known) &&
             !config.disabled.includes(s.id) &&
+            !LOGIN_CTA_FAMILIES[providerFamily(s.id)] &&
             !recentlyKeyed.has(s.id)
         )
         .map((s) => s.id);
@@ -4813,6 +4835,33 @@ window.addEventListener("DOMContentLoaded", () => {
 
   providersEl.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
+
+    // Card-level sign-in / add-account shortcuts: Cursor's browser login
+    // runs straight from the card; key-based families jump into the
+    // Settings account form, opened and focused.
+    const loginCta = target.closest<HTMLElement>("[data-card-login]");
+    if (loginCta) {
+      void startCursorLogin();
+      return;
+    }
+    const addCta = target.closest<HTMLElement>("[data-card-add-account]");
+    if (addCta) {
+      const provider = addCta.getAttribute("data-card-add-account")!;
+      document.body.classList.add("settings-open");
+      const group = document
+        .querySelector(`[data-account-add="${provider}"]`)
+        ?.closest(".acc-group");
+      group?.classList.add("open");
+      requestAnimationFrame(() => {
+        document
+          .querySelector<HTMLElement>(`[data-account-add="${provider}"] input`)
+          ?.focus();
+        document
+          .querySelector(`[data-account-add="${provider}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      return;
+    }
 
     const link = target.closest<HTMLElement>("[data-link]");
     if (link) {
